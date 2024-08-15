@@ -18,7 +18,7 @@ We thank the authors and contributors of these repositories for making their cod
 - **unCLIP DDNM**.
 
 ## Note
-We corrected a bug in our PSNR computation using Deepfloyd IF (Imagen) for SR.The LR PSNRs are now better than reported values in the paper.
+We corrected a bug in our computation.The LR PSNRs using using Deepfloyd IF (Imagen) are now better than reported values in the paper.
 
 As mentioned in the discussion section, even with high LR PSNR, results may not always be perceptually high quality. If the result is not satisfactory try running with different random seeds.
 
