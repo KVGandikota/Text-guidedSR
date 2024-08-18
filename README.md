@@ -27,12 +27,12 @@ Download multimodal CelebA HQ to /data/work_data/multi_mod_celebahq
 
 running command for testing 8x SR
 ```python
-python run_dataset_imagen_ddnm.py --count 200 --scale 16 --g1 7 --g2 4 --run 3\
+python run_dataset_imagen_ddnm.py --count 200 --scale 16 --g1 7 --g2 4 --run 3
 ```
 
 running command for testing 16x SR
 ```python
-python run_dataset_imagen_ddnm.py --count 200 --scale 16 --g1 7 --g2 4 --run 3\
+python run_dataset_imagen_ddnm.py --count 200 --scale 16 --g1 7 --g2 4 --run 3
 ```
 
 
