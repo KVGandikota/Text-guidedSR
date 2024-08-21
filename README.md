@@ -46,8 +46,12 @@ python run_dataset_imagen_superresolution.py --count 200 --scale 16 -g1 7 -g2 4 
 ```
 
 Set -g1 1 and -g2 1 for disabling classifier-free guidance in both stages. 
-Set --scale 16 for 16x super-resolution
+
+Set --scale 16 for 16x super-resolution.
+
 Modify --dec_steps and --sr_steps to control the number of diffusion steps in the first stage and second stage.
+
+
 
 
 
