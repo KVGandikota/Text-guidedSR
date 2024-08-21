@@ -29,16 +29,26 @@ As mentioned in the discussion section, even with high LR PSNR, results may not 
 ## Evaluation on dataset
 Download multimodal CelebA HQ to /data/work_data/multi_mod_celebahq
 
-running command for testing 8x SR using  DDNM with classifier free guidance 
-```python
-python run_dataset_imagen_ddnm.py --count 200 --scale 16 -g1 7 -g2 4 --run 3
-```
 
 running command for testing 16x SR using  DDNM with classifier free guidance 
 ```python
-python run_dataset_imagen_ddnm.py --count 200 --scale 16 -g1 7 -g2 4 --run 3
+python run_dataset_imagen_superresolution.py --count 200 --scale 16 -g1 7 -g2 4 --run 3 --algo ddnm
 ```
+
+running command for testing 16x SR using  DPS with classifier free guidance 
+```python
+python run_dataset_imagen_superresolution.py --count 200 --scale 16 -g1 7 -g2 4 --algo dps --dps_scale 0.5 --dec_steps 250 --sr_steps 100 --start_time 100 --run 1
+```
+
+running command for testing 16x SR using  PiGDM with classifier free guidance 
+```python
+python run_dataset_imagen_superresolution.py --count 200 --scale 16 -g1 7 -g2 4 --algo pigdm --dps_scale 0.5 --dec_steps 250 --sr_steps 100 --start_time 100 --run 1
+```
+
 Set -g1 1 and -g2 1 for disabling classifier-free guidance in both stages. 
+Set --scale 16 for 16x super-resolution
+Modify --dec_steps and --sr_steps to control the number of diffusion steps in the first stage and second stage.
+
 
 
 
