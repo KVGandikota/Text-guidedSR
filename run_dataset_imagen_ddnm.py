@@ -83,7 +83,7 @@ def main (args):
             if not os.path.isdir(exp_dir1):
                 os.mkdir(exp_dir1)
             for i in range(args.count):
-                generator = torch.manual_seed(70)
+                generator = torch.manual_seed(restart)
                 #get image and caption
                 file_num = obj[i]
                 image_name = f'{image_dir}{file_num}.jpg'
