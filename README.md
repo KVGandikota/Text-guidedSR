@@ -17,7 +17,7 @@ We thank the authors and contributors of these repositories for making their cod
 - **Imagen(DeepFloyd-IF) DDNM**
 - **Imagen(DeepFloyd-IF) PiGDM**
 - **Imagen(DeepFloyd-IF) DPS**
-- 
+
 ## Coming Soon
 - **unCLIP DDNM**.
 
