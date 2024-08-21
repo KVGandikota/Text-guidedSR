@@ -36,6 +36,8 @@ def parse_args():
     parser.add_argument('--start_time', type=int, default=None, help='start step for diffusion')
     parser.add_argument('-g1','--guidance_scale_stage1', type=float, default=7.0, help= 'classifier free guidance in 1st stage imagen diffusion if g1>1')
     parser.add_argument('-g2','--guidance_scale_stage2', type=float, default=4.0, help= 'classifier free guidance in 2nd stage (SR stage) in imagen if g2>1')
+    parser.add_argument('--algo', type=str, default='ddnm', help='algorithm for SR-- choose among ddnm, dps, pigdm')
+    parser.add_argument('--dps_scale', type=float, default=1.0, help= 'dps step size')
     parser.add_argument('--run', type=int, default=1, help='number of runs')
     return parser.parse_args()
 
@@ -71,7 +73,7 @@ def main (args):
     A = Av.A
     Ap = Av.A_pinv
 
-    exp_dir = f'{args.log_dir}_{args.scale}/'
+    exp_dir = f'{args.log_dir}_{args.algo}_{args.scale}/'
     if not os.path.isdir(exp_dir):
         os.mkdir(exp_dir)
     #Keep track of Quantitative evaluation
@@ -83,7 +85,7 @@ def main (args):
             if not os.path.isdir(exp_dir1):
                 os.mkdir(exp_dir1)
             for i in range(args.count):
-                generator = torch.manual_seed(70)
+                generator = torch.manual_seed(restart)
                 #get image and caption
                 file_num = obj[i]
                 image_name = f'{image_dir}{file_num}.jpg'
@@ -99,10 +101,10 @@ def main (args):
                 # Text guided restoration
                 
                 #Within pipe stage 1
-                image = stage_1.sup_res(lr = lrf.detach(),prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_embeds, num_inference_steps=args.dec_steps, guidance_scale = args.guidance_scale_stage1, generator=generator, output_type="pt", sr_scale=scale//4, algo='ddnm')
+                image = stage_1.sup_res(lr = lrf.detach(),prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_embeds, num_inference_steps=args.dec_steps, guidance_scale = args.guidance_scale_stage1, algo = args.algo, generator=generator, output_type="pt", sr_scale=scale//4, start_time = args.start_time, dps_stepsize=args.dps_scale)
                 
                 #pipe stage 2                
-                image = stage_2.sup_res(image=image,lr = lrf.detach(),sr_scale=scale//4, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_embeds,  num_inference_steps=args.sr_steps, guidance_scale = args.guidance_scale_stage2, generator=generator, output_type="pt", algo='ddnm').images.clamp_(-1,1)
+                image = stage_2.sup_res(image=image,lr = lrf.detach(),sr_scale=scale//4, prompt_embeds=prompt_embeds, negative_prompt_embeds=negative_embeds,  num_inference_steps=args.sr_steps, guidance_scale = args.guidance_scale_stage2, algo = args.algo, generator=generator, output_type="pt",dps_stepsize=args.dps_scale).images.clamp_(-1,1)
                 
                 image =  0.5+0.5*image
                 # Quantitative evaluation

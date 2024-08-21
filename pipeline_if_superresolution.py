@@ -977,6 +977,7 @@ class IFSuperResolutionPipeline(DiffusionPipeline, LoraLoaderMixin):
         negative_prompt: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: Optional[int] = 1,
         eta: float = 0.0,
+        algo = 'ddnm',
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
@@ -988,6 +989,7 @@ class IFSuperResolutionPipeline(DiffusionPipeline, LoraLoaderMixin):
         noise_level: int = 250,
         clean_caption: bool = True,
         lr: Optional[torch.FloatTensor] = None,
+        dps_stepsize: float = 0.1,
         sr_scale: int = 8
     ):
         """
@@ -1160,9 +1162,11 @@ class IFSuperResolutionPipeline(DiffusionPipeline, LoraLoaderMixin):
         # 8. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
-            for i, t in enumerate(timesteps):
+          for i, t in enumerate(timesteps):
+            with torch.set_grad_enabled(algo=='dps' or algo=='pigdm'):
+                if algo=='dps' or algo=='pigdm':
+                       intermediate_images.requires_grad = True
                 model_input = torch.cat([intermediate_images, upscaled], dim=1)
-
                 model_input = torch.cat([model_input] * 2) if do_classifier_free_guidance else model_input
                 model_input = self.scheduler.scale_model_input(model_input, t)
 
@@ -1187,16 +1191,13 @@ class IFSuperResolutionPipeline(DiffusionPipeline, LoraLoaderMixin):
                 if self.scheduler.config.variance_type not in ["learned", "learned_range"]:
                     noise_pred, _ = noise_pred.split(intermediate_images.shape[1], dim=1)
 
-               
-
-                xo = self.scheduler.step(
-                    noise_pred, t, intermediate_images, **extra_step_kwargs, return_dict=True
-                ).pred_original_sample
-                xo = Apy+xo-Ap(A(xo.reshape(xo.size(0),-1).float())).half().reshape(*xo.size())
-
-
-
                 prev_t = self.scheduler.previous_timestep(t)
+                
+                if noise_pred.shape[1] == intermediate_images.shape[1] * 2 and self.scheduler.variance_type in ["learned", "learned_range"]:
+                    model_output, predicted_variance = torch.split(noise_pred, intermediate_images.shape[1], dim=1)
+                else:
+                    predicted_variance = None
+                
                 alpha_prod_t = self.scheduler.alphas_cumprod[t]
                 alpha_prod_t_prev = self.scheduler.alphas_cumprod[prev_t] if prev_t >= 0 else self.scheduler.one
                 beta_prod_t = 1 - alpha_prod_t
@@ -1205,6 +1206,7 @@ class IFSuperResolutionPipeline(DiffusionPipeline, LoraLoaderMixin):
                 current_beta_t = 1 - current_alpha_t
                 pred_original_sample_coeff = (alpha_prod_t_prev ** (0.5) * current_beta_t) / beta_prod_t
                 current_sample_coeff = current_alpha_t ** (0.5) * beta_prod_t_prev / beta_prod_t
+
                 if t > 0:
                     if self.scheduler.variance_type == "fixed_small_log":
                         sigma_t = self.scheduler._get_variance(t, predicted_variance=predicted_variance)
@@ -1214,19 +1216,51 @@ class IFSuperResolutionPipeline(DiffusionPipeline, LoraLoaderMixin):
                         sigma_t = torch.exp(0.5 * variance)
                     else:
                         sigma_t = (self.scheduler._get_variance(t, predicted_variance=predicted_variance) ** 0.5)
+                        
 
-                pred_prev_sample = pred_original_sample_coeff * xo + current_sample_coeff * intermediate_images
-                device = noise_pred.device
-                intermediate_images = pred_prev_sample + (sigma_t*randn_tensor(
+                xo = self.scheduler.step(
+                    noise_pred, t, intermediate_images, **extra_step_kwargs, return_dict=True
+                ).pred_original_sample
+                
+                if algo == 'ddnm':
+                    xo = Apy+xo-Ap(A(xo.reshape(xo.size(0),-1).float())).half().reshape(*xo.size())
+                    pred_prev_sample = pred_original_sample_coeff * xo + current_sample_coeff * intermediate_images
+                    device = noise_pred.device
+                    intermediate_images = pred_prev_sample + (sigma_t*randn_tensor(
                         intermediate_images.shape, generator=generator, device=device, dtype=intermediate_images.dtype
                     )) 
+                elif algo == 'dps':
+                    difference = lr - A(xo.reshape(xo.size(0),-1).float()).reshape(*lr.size())
+                    norm = torch.linalg.norm(difference.reshape(difference.shape[0], -1), axis=1)
+                    norm_grad = torch.autograd.grad(outputs=norm.sum(), inputs=intermediate_images)[0]
+                    device = noise_pred.device
+                    with torch.set_grad_enabled(False):
+                        pred_original_sample = xo
+                        pred_prev_sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * intermediate_images
+                        intermediate_images = pred_prev_sample + (sigma_t*randn_tensor(
+                        intermediate_images.shape, generator=generator, device=device, dtype=intermediate_images.dtype
+                        ))
+                        intermediate_images -= norm_grad * dps_stepsize
+                        intermediate_images = intermediate_images.detach()
 
-                
+                elif algo == 'pigdm':
+                    difference = Apy.reshape(xo.size(0),-1) - Ap(A(xo.reshape(xo.size(0),-1).float()))
+                    norm = torch.linalg.norm(difference.reshape(difference.shape[0], -1), axis=1)
+                    norm_grad = torch.autograd.grad(outputs=norm.sum(), inputs=intermediate_images)[0]
+                    device = noise_pred.device
+                    with torch.set_grad_enabled(False):
+                        pred_original_sample = xo
+                        pred_prev_sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * intermediate_images
+                        intermediate_images = pred_prev_sample + (sigma_t*randn_tensor(
+                        intermediate_images.shape, generator=generator, device=device, dtype=intermediate_images.dtype
+                        ))
+                        intermediate_images -= norm_grad * dps_stepsize
+                        intermediate_images = intermediate_images.detach()
 
-                # call the callback, if provided
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+            # call the callback, if provided
+            if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
-                    if callback is not None and i % callback_steps == 0:
+            if callback is not None and i % callback_steps == 0:
                         callback(i, t, intermediate_images)
 
         image = intermediate_images

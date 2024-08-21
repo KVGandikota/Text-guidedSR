@@ -875,6 +875,7 @@ class IFPipeline(DiffusionPipeline, LoraLoaderMixin):
         height: Optional[int] = None,
         width: Optional[int] = None,
         eta: float = 0.0,
+        algo = 'ddnm',
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
@@ -884,7 +885,9 @@ class IFPipeline(DiffusionPipeline, LoraLoaderMixin):
         callback_steps: int = 1,
         clean_caption: bool = True,
         lr: Optional[torch.FloatTensor] = None,
+        dps_stepsize: Optional[float] = 0.1,
         sr_scale: int = 8,
+        start_time: Optional[int] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         """
@@ -1002,6 +1005,11 @@ class IFPipeline(DiffusionPipeline, LoraLoaderMixin):
         else:
             self.scheduler.set_timesteps(num_inference_steps, device=device)
             timesteps = self.scheduler.timesteps
+        if start_time != None:
+            timesteps  = timesteps[start_time:]
+        else:
+            start_time = 0
+        cur_time = timesteps[0]
 
         # 5. Prepare intermediate images
         intermediate_images = self.prepare_intermediate_images(
@@ -1025,124 +1033,160 @@ class IFPipeline(DiffusionPipeline, LoraLoaderMixin):
         A,Ap=A_funcs.A,A_funcs.A_pinv 
 
         Apy =Ap(lr.float()).view(lr.shape[0], 3, lr.shape[2]*sr_scale,lr.shape[2]*sr_scale).half()
+        if start_time != None:
+          print('starting from')
+          print(cur_time)
+          alpha_prod_t = self.scheduler.alphas_cumprod[cur_time]
+          beta_prod_t = 1 - alpha_prod_t
+          #beta_prod_t_prev = 1 - alpha_prod_t_prev
+          noise_cur = torch.randn(Apy.shape, device=Apy.device, dtype=Apy.dtype)
+        
+          decoder_latents = (alpha_prod_t ** (0.5)) *Apy + (beta_prod_t** (0.5))*noise_cur
+          intermediate_images = decoder_latents
+
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
-                model_input = (
+                with torch.set_grad_enabled(algo=='dps' or algo=='pigdm'):
+                    if algo=='dps' or algo=='pigdm':
+                       intermediate_images.requires_grad =True
+                    model_input = (
                     torch.cat([intermediate_images] * 2) if do_classifier_free_guidance else intermediate_images
-                )
-                model_input = self.scheduler.scale_model_input(model_input, t)
-
-                # predict the noise residual
-                noise_pred = self.unet(
+                    )
+                    model_input = self.scheduler.scale_model_input(model_input, t)
+                    
+                    # predict the noise residual
+                    noise_pred = self.unet(
                     model_input,
                     t,
                     encoder_hidden_states=prompt_embeds,
                     cross_attention_kwargs=cross_attention_kwargs,
                     return_dict=False,
-                )[0]
+                    )[0]
+                    
+                    # perform guidance
+                    if do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred_uncond, _ = noise_pred_uncond.split(model_input.shape[1], dim=1)
+                        noise_pred_text, predicted_variance = noise_pred_text.split(model_input.shape[1], dim=1)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                        noise_pred = torch.cat([noise_pred, predicted_variance], dim=1)
+                        
+                    if self.scheduler.config.variance_type not in ["learned", "learned_range"]:
+                        noise_pred, _ = noise_pred.split(model_input.shape[1], dim=1)
+                    # compute the previous noisy sample x_t -> x_t-1 
+                    prev_t = self.scheduler.previous_timestep(t)
+                    if noise_pred.shape[1] == intermediate_images.shape[1] * 2 and self.scheduler.variance_type in ["learned", "learned_range"]:
+                        model_output, predicted_variance = torch.split(noise_pred, intermediate_images.shape[1], dim=1)
+                    else:
+                        predicted_variance = None
 
-                # perform guidance
-                if do_classifier_free_guidance:
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred_uncond, _ = noise_pred_uncond.split(model_input.shape[1], dim=1)
-                    noise_pred_text, predicted_variance = noise_pred_text.split(model_input.shape[1], dim=1)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                    noise_pred = torch.cat([noise_pred, predicted_variance], dim=1)
+                    # 1. compute alphas, betas
+                    alpha_prod_t = self.scheduler.alphas_cumprod[t]
+                    alpha_prod_t_prev = self.scheduler.alphas_cumprod[prev_t] if prev_t >= 0 else self.scheduler.one
+                    beta_prod_t = 1 - alpha_prod_t
+                    beta_prod_t_prev = 1 - alpha_prod_t_prev
+                    current_alpha_t = alpha_prod_t / alpha_prod_t_prev
+                    current_beta_t = 1 - current_alpha_t
 
-                if self.scheduler.config.variance_type not in ["learned", "learned_range"]:
-                    noise_pred, _ = noise_pred.split(model_input.shape[1], dim=1)
-
-                # compute the previous noisy sample x_t -> x_t-1                
-
-                prev_t = self.scheduler.previous_timestep(t)
-
-                if noise_pred.shape[1] == intermediate_images.shape[1] * 2 and self.scheduler.variance_type in ["learned", "learned_range"]:
-                    model_output, predicted_variance = torch.split(noise_pred, intermediate_images.shape[1], dim=1)
-                else:
-                    predicted_variance = None
-
-                # 1. compute alphas, betas
-                alpha_prod_t = self.scheduler.alphas_cumprod[t]
-                alpha_prod_t_prev = self.scheduler.alphas_cumprod[prev_t] if prev_t >= 0 else self.scheduler.one
-                beta_prod_t = 1 - alpha_prod_t
-                beta_prod_t_prev = 1 - alpha_prod_t_prev
-                current_alpha_t = alpha_prod_t / alpha_prod_t_prev
-                current_beta_t = 1 - current_alpha_t
-
-                # 2. compute predicted original sample from predicted noise also called
-                # "predicted x_0" of formula (15) from https://arxiv.org/pdf/2006.11239.pdf
-                if self.scheduler.config.prediction_type == "epsilon":
-                  pred_original_sample = (intermediate_images - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
-                  #pred_original_sample = (intermediate_images -(current_beta_t/(beta_prod_t ** (0.5)))*model_output)/alpha_prod_t ** (0.5)
+                    # 2. compute predicted original sample from predicted noise also called
+                    # "predicted x_0" of formula (15) from https://arxiv.org/pdf/2006.11239.pdf
+                    if self.scheduler.config.prediction_type == "epsilon":
+                      pred_original_sample = (intermediate_images - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
+                      #pred_original_sample = (intermediate_images -(current_beta_t/(beta_prod_t ** (0.5)))*model_output)/alpha_prod_t ** (0.5)
                 
-                ###This is what is getting executed
+                    ###This is what is getting executed
                 
-                elif self.scheduler.config.prediction_type == "sample":
-                  pred_original_sample = model_output
+                    elif self.scheduler.config.prediction_type == "sample":
+                      pred_original_sample = model_output
                 
-                elif self.scheduler.config.prediction_type == "v_prediction":
-                  pred_original_sample = (alpha_prod_t**0.5) * intermediate_images - (beta_prod_t**0.5) * model_output
+                    elif self.scheduler.config.prediction_type == "v_prediction":
+                      pred_original_sample = (alpha_prod_t**0.5) * intermediate_images - (beta_prod_t**0.5) * model_output
                 
-                else:
-                    raise ValueError(
+                    else:
+                        raise ValueError(
                         f"prediction_type given as {self.scheduler.config.prediction_type} must be one of `epsilon`, `sample` or"
                         " `v_prediction`  for the DDPMScheduler."
-                    )
+                        )
 
-                #3.Clip or threshold updated xo (earlier this thresholding was prior to ddnm step on predicted x_0"
-                if self.scheduler.config.thresholding:
-                    pred_original_sample = self.scheduler._threshold_sample(pred_original_sample)
-                    #This gets exectuted
-                elif self.scheduler.config.clip_sample:
-                    pred_original_sample = pred_original_sample.clamp(
+                    #3.Clip or threshold updated xo (earlier this thresholding was prior to ddnm step on predicted x_0"
+                    if self.scheduler.config.thresholding:
+                      pred_original_sample = self.scheduler._threshold_sample(pred_original_sample)
+                      #This gets exectuted
+                    elif self.scheduler.config.clip_sample:
+                      pred_original_sample = pred_original_sample.clamp(
                         -self.scheduler.config.clip_sample_range, self.scheduler.config.clip_sample_range
-                    )
+                      )
                     
 
-                # 4. Compute coefficients for pred_original_sample x_0 and current sample x_t
-                # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-                pred_original_sample_coeff = (alpha_prod_t_prev ** (0.5) * current_beta_t) / beta_prod_t
-                current_sample_coeff = current_alpha_t ** (0.5) * beta_prod_t_prev / beta_prod_t
-                #coeffs verified, correct
+                    # 4. Compute coefficients for pred_original_sample x_0 and current sample x_t
+                    # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
+                    pred_original_sample_coeff = (alpha_prod_t_prev ** (0.5) * current_beta_t) / beta_prod_t
+                    current_sample_coeff = current_alpha_t ** (0.5) * beta_prod_t_prev / beta_prod_t
+                    #coeffs verified, correct
                 
-                # first calculate lambda_t and gamma_t
+                    # first calculate lambda_t and gamma_t
                 
-                variance = 0
-                if t > 0:
-                    if self.scheduler.variance_type == "fixed_small_log":
-                        sigma_t = self.scheduler._get_variance(t, predicted_variance=predicted_variance)
+                    variance = 0
+                    if t > 0:
+                        if self.scheduler.variance_type == "fixed_small_log":
+                            sigma_t = self.scheduler._get_variance(t, predicted_variance=predicted_variance)
                     
-                    elif self.scheduler.variance_type == "learned_range":
-                        variance = self.scheduler._get_variance(t, predicted_variance=predicted_variance)
-                        sigma_t = torch.exp(0.5 * variance)
-                    else:
-                        sigma_t = (self.scheduler._get_variance(t, predicted_variance=predicted_variance) ** 0.5) 
+                        elif self.scheduler.variance_type == "learned_range":
+                            variance = self.scheduler._get_variance(t, predicted_variance=predicted_variance)
+                            sigma_t = torch.exp(0.5 * variance)
+                        else:
+                            sigma_t = (self.scheduler._get_variance(t, predicted_variance=predicted_variance) ** 0.5) 
                                               
-                at_next = alpha_prod_t#current_alpha_t
+                    at_next = alpha_prod_t#current_alpha_t
                 
-                xo = self.scheduler.step(
-                    noise_pred, t, intermediate_images, **extra_step_kwargs, return_dict=True
-                ).pred_original_sample
-                xo = Apy+xo -Ap(A(xo.reshape(xo.size(0),-1).float())).half().reshape(*xo.size())
-                pred_original_sample = xo
+                    xo = self.scheduler.step(
+                        noise_pred, t, intermediate_images, **extra_step_kwargs, return_dict=True
+                    ).pred_original_sample
                 
-                
-                
-                pred_prev_sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * intermediate_images
-                device = model_output.device
-                intermediate_images = pred_prev_sample + (sigma_t*randn_tensor(
-                        model_output.shape, generator=generator, device=device, dtype=model_output.dtype
-                    )) 
+                    if algo == 'ddnm':
+                        xo = Apy+xo -Ap(A(xo.reshape(xo.size(0),-1).float())).half().reshape(*xo.size())
+                        pred_original_sample = xo
+                        pred_prev_sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * intermediate_images
+                        device = model_output.device
+                        intermediate_images = pred_prev_sample + (sigma_t*randn_tensor(
+                            model_output.shape, generator=generator, device=device, dtype=model_output.dtype
+                        )) 
+                    elif algo == 'dps':
+                        difference = lr - A(xo.reshape(xo.size(0),-1).float()).reshape(*lr.size())
+                        norm = torch.linalg.norm(difference.reshape(difference.shape[0], -1), axis=1)
+                        norm_grad = torch.autograd.grad(outputs=norm.sum(), inputs=intermediate_images)[0]
+                        device = model_output.device
+                        with torch.set_grad_enabled(False):
+                            pred_original_sample = xo
+                            pred_prev_sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * intermediate_images
+                            intermediate_images = pred_prev_sample + (sigma_t*randn_tensor(
+                                model_output.shape, generator=generator, device=device, dtype=model_output.dtype
+                            ))
+                            intermediate_images -= norm_grad * dps_stepsize
+                            intermediate_images = intermediate_images.detach()
 
+                    elif algo == 'pigdm':
+                        difference = Apy.reshape(xo.size(0),-1) - Ap(A(xo.reshape(xo.size(0),-1).float()))
+                        norm = torch.linalg.norm(difference.reshape(difference.shape[0], -1), axis=1)
+                        norm_grad = torch.autograd.grad(outputs=norm.sum(), inputs=intermediate_images)[0]
+                        device = model_output.device
+                        with torch.set_grad_enabled(False):
+                            pred_original_sample = xo
+                            pred_prev_sample = pred_original_sample_coeff * pred_original_sample + current_sample_coeff * intermediate_images
+                            intermediate_images = pred_prev_sample + (sigma_t*randn_tensor(
+                                model_output.shape, generator=generator, device=device, dtype=model_output.dtype
+                            ))
+                            intermediate_images -= norm_grad * dps_stepsize
+                            intermediate_images = intermediate_images.detach()
 
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
-                    if callback is not None and i % callback_steps == 0:
-                        callback(i, t, intermediate_images)
+                if callback is not None and i % callback_steps == 0:
+                    callback(i, t, intermediate_images)
 
         image = intermediate_images
 
