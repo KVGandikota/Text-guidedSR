@@ -13,8 +13,12 @@ Comprehensive list of packages used in the environment used for experiments are 
 The codes are based on [deep-floyd IF](https://github.com/deep-floyd/IF), [karlo unCLIP](https://github.com/kakaobrain/karlo), using [Huggingface Diffusers](https://github.com/huggingface/diffusers). Three zero-shot methods [DDNM](https://github.com/wyhuai/DDNM), [DPS](https://github.com/DPS2022/diffusion-posterior-sampling), [PiGDM](https://github.com/NVlabs/RED-diff) are included for text guided super-resolution.
 We thank the authors and contributors of these repositories for making their code public!
 
+## Included are
+- **Imagen(DeepFloyd-IF) DDNM**
+- **Imagen(DeepFloyd-IF) PiGDM**
+- **Imagen(DeepFloyd-IF) DPS**
+- 
 ## Coming Soon
-- **T2I DPS and T2I PiGDM**.
 - **unCLIP DDNM**.
 
 ## Note
@@ -25,15 +29,17 @@ As mentioned in the discussion section, even with high LR PSNR, results may not 
 ## Evaluation on dataset
 Download multimodal CelebA HQ to /data/work_data/multi_mod_celebahq
 
-running command for testing 8x SR
+running command for testing 8x SR using  DDNM with classifier free guidance 
 ```python
 python run_dataset_imagen_ddnm.py --count 200 --scale 16 -g1 7 -g2 4 --run 3
 ```
 
-running command for testing 16x SR
+running command for testing 16x SR using  DDNM with classifier free guidance 
 ```python
 python run_dataset_imagen_ddnm.py --count 200 --scale 16 -g1 7 -g2 4 --run 3
 ```
+Set -g1 1 and -g2 1 for disabling classifier-free guidance in both stages. 
+
 
 
 ## References
