@@ -1,4 +1,4 @@
-# Text-guidedSR
+# Text-guided Explorable Image Super-resolution (CVPR 2024)
 Code for the CVPR 2024 [paper](https://openaccess.thecvf.com/content/CVPR2024/html/Gandikota_Text-guided_Explorable_Image_Super-resolution_CVPR_2024_paper.html) **Text-guided Explorable Image Super-resolution**.
 ![network](textguidedsr.png)
 
