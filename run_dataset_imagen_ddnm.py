@@ -1,9 +1,9 @@
 import sys
 import argparse
 import random
-from pipeline_if_all import IFPipeline
-from pipeline_if_superresolution_all import IFSuperResolutionPipeline
-from diffusers.utils import pt_to_pil
+from pipeline_if import IFPipeline
+from pipeline_if_superresolution import IFSuperResolutionPipeline
+#from diffusers.utils import pt_to_pil
 import torch
 import os
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
